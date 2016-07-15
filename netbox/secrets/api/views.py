@@ -42,7 +42,7 @@ class SecretListView(generics.GenericAPIView):
     """
     List secrets (filterable). If a private key is POSTed, attempt to decrypt each Secret.
     """
-    queryset = Secret.objects.select_related('device__primary_ip', 'role')\
+    queryset = Secret.objects.select_related('device__primary_ip4', 'device__primary_ip6', 'role')\
         .prefetch_related('role__users', 'role__groups')
     serializer_class = serializers.SecretSerializer
     filter_class = SecretFilter
@@ -52,7 +52,7 @@ class SecretListView(generics.GenericAPIView):
         queryset = self.filter_queryset(self.get_queryset())
 
         # Attempt to decrypt each Secret if a private key was provided.
-        if private_key is not None:
+        if private_key:
             try:
                 uk = UserKey.objects.get(user=request.user)
             except UserKey.DoesNotExist:
@@ -87,7 +87,7 @@ class SecretDetailView(generics.GenericAPIView):
     """
     Retrieve a single Secret. If a private key is POSTed, attempt to decrypt the Secret.
     """
-    queryset = Secret.objects.select_related('device__primary_ip', 'role')\
+    queryset = Secret.objects.select_related('device__primary_ip4', 'device__primary_ip6', 'role')\
         .prefetch_related('role__users', 'role__groups')
     serializer_class = serializers.SecretSerializer
     renderer_classes = [FormlessBrowsableAPIRenderer, JSONRenderer, FreeRADIUSClientsRenderer]
@@ -96,7 +96,7 @@ class SecretDetailView(generics.GenericAPIView):
         secret = get_object_or_404(Secret, pk=pk)
 
         # Attempt to decrypt the Secret if a private key was provided.
-        if private_key is not None:
+        if private_key:
             try:
                 uk = UserKey.objects.get(user=request.user)
             except UserKey.DoesNotExist:

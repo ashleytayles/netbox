@@ -38,7 +38,7 @@ class RackGroupSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'slug', 'site']
 
 
-class RackGroupNestedSerializer(SiteSerializer):
+class RackGroupNestedSerializer(RackGroupSerializer):
 
     class Meta(SiteSerializer.Meta):
         fields = ['id', 'name', 'slug']
@@ -221,12 +221,14 @@ class DeviceSerializer(serializers.ModelSerializer):
     platform = PlatformNestedSerializer()
     rack = RackNestedSerializer()
     primary_ip = DeviceIPAddressNestedSerializer()
+    primary_ip4 = DeviceIPAddressNestedSerializer()
+    primary_ip6 = DeviceIPAddressNestedSerializer()
     parent_device = serializers.SerializerMethodField()
 
     class Meta:
         model = Device
         fields = ['id', 'name', 'display_name', 'device_type', 'device_role', 'platform', 'serial', 'rack', 'position',
-                  'face', 'parent_device', 'status', 'primary_ip', 'comments']
+                  'face', 'parent_device', 'status', 'primary_ip', 'primary_ip4', 'primary_ip6', 'comments']
 
     def get_parent_device(self, obj):
         try:

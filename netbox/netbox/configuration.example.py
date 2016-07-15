@@ -73,3 +73,16 @@ TIME_FORMAT = 'g:i a'
 SHORT_TIME_FORMAT = 'H:i:s'
 DATETIME_FORMAT = 'N j, Y g:i a'
 SHORT_DATETIME_FORMAT = 'Y-m-d H:i'
+
+# Optionally display a persistent banner at the top and/or bottom of every page. To display the same content in both
+# banners, define BANNER_TOP and set BANNER_BOTTOM = BANNER_TOP.
+BANNER_TOP = ''
+BANNER_BOTTOM = ''
+
+# When determining the primary IP address for a device, IPv6 is preferred over IPv4 by default. Set this to True to
+# prefer IPv4 instead.
+PREFER_IPV4 = False
+
+# Enforcement of unique IP space can be toggled on a per-VRF basis. To enforce unique IP space within the global table
+# (all prefixes and IP addresses not assigned to a VRF), set ENFORCE_GLOBAL_UNIQUE to True.
+ENFORCE_GLOBAL_UNIQUE = False

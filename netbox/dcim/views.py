@@ -1,4 +1,6 @@
 import re
+from natsort import natsorted
+from operator import attrgetter
 
 from django.contrib import messages
 from django.contrib.auth.decorators import permission_required
@@ -259,18 +261,31 @@ def devicetype(request, pk):
     devicetype = get_object_or_404(DeviceType, pk=pk)
 
     # Component tables
-    consoleport_table = tables.ConsolePortTemplateTable(ConsolePortTemplate.objects.filter(device_type=devicetype))
-    consoleserverport_table = tables.ConsoleServerPortTemplateTable(ConsoleServerPortTemplate.objects
-                                                                    .filter(device_type=devicetype))
-    powerport_table = tables.PowerPortTemplateTable(PowerPortTemplate.objects.filter(device_type=devicetype))
-    poweroutlet_table = tables.PowerOutletTemplateTable(PowerOutletTemplate.objects.filter(device_type=devicetype))
-    interface_table = tables.InterfaceTemplateTable(InterfaceTemplate.objects.filter(device_type=devicetype))
-    devicebay_table = tables.DeviceBayTemplateTable(DeviceBayTemplate.objects.filter(device_type=devicetype))
+    consoleport_table = tables.ConsolePortTemplateTable(
+        natsorted(ConsolePortTemplate.objects.filter(device_type=devicetype), key=attrgetter('name'))
+    )
+    consoleserverport_table = tables.ConsoleServerPortTemplateTable(
+        natsorted(ConsoleServerPortTemplate.objects.filter(device_type=devicetype), key=attrgetter('name'))
+    )
+    powerport_table = tables.PowerPortTemplateTable(
+        natsorted(PowerPortTemplate.objects.filter(device_type=devicetype), key=attrgetter('name'))
+    )
+    poweroutlet_table = tables.PowerOutletTemplateTable(
+        natsorted(PowerOutletTemplate.objects.filter(device_type=devicetype), key=attrgetter('name'))
+    )
+    mgmt_interface_table = tables.InterfaceTemplateTable(InterfaceTemplate.objects.filter(device_type=devicetype,
+                                                                                          mgmt_only=True))
+    interface_table = tables.InterfaceTemplateTable(InterfaceTemplate.objects.filter(device_type=devicetype,
+                                                                                     mgmt_only=False))
+    devicebay_table = tables.DeviceBayTemplateTable(
+        natsorted(DeviceBayTemplate.objects.filter(device_type=devicetype), key=attrgetter('name'))
+    )
     if request.user.has_perm('dcim.change_devicetype'):
         consoleport_table.base_columns['pk'].visible = True
         consoleserverport_table.base_columns['pk'].visible = True
         powerport_table.base_columns['pk'].visible = True
         poweroutlet_table.base_columns['pk'].visible = True
+        mgmt_interface_table.base_columns['pk'].visible = True
         interface_table.base_columns['pk'].visible = True
         devicebay_table.base_columns['pk'].visible = True
 
@@ -280,6 +295,7 @@ def devicetype(request, pk):
         'consoleserverport_table': consoleserverport_table,
         'powerport_table': powerport_table,
         'poweroutlet_table': poweroutlet_table,
+        'mgmt_interface_table': mgmt_interface_table,
         'interface_table': interface_table,
         'devicebay_table': devicebay_table,
     })
@@ -337,7 +353,7 @@ class ComponentTemplateCreateView(View):
         return render(request, 'dcim/component_template_add.html', {
             'devicetype': devicetype,
             'component_type': self.model._meta.verbose_name,
-            'form': self.form(),
+            'form': self.form(initial=request.GET),
             'cancel_url': reverse('dcim:devicetype', kwargs={'pk': devicetype.pk}),
         })
 
@@ -501,7 +517,8 @@ class PlatformBulkDeleteView(PermissionRequiredMixin, BulkDeleteView):
 #
 
 class DeviceListView(ObjectListView):
-    queryset = Device.objects.select_related('device_type__manufacturer', 'device_role', 'rack__site', 'primary_ip')
+    queryset = Device.objects.select_related('device_type__manufacturer', 'device_role', 'rack__site', 'primary_ip4',
+                                             'primary_ip6')
     filter = filters.DeviceFilter
     filter_form = forms.DeviceFilterForm
     table = tables.DeviceTable
@@ -512,15 +529,26 @@ class DeviceListView(ObjectListView):
 def device(request, pk):
 
     device = get_object_or_404(Device, pk=pk)
-    console_ports = ConsolePort.objects.filter(device=device).select_related('cs_port__device')
-    cs_ports = ConsoleServerPort.objects.filter(device=device).select_related('connected_console')
-    power_ports = PowerPort.objects.filter(device=device).select_related('power_outlet__device')
-    power_outlets = PowerOutlet.objects.filter(device=device).select_related('connected_port')
+    console_ports = natsorted(
+        ConsolePort.objects.filter(device=device).select_related('cs_port__device'), key=attrgetter('name')
+    )
+    cs_ports = natsorted(
+        ConsoleServerPort.objects.filter(device=device).select_related('connected_console'), key=attrgetter('name')
+    )
+    power_ports = natsorted(
+        PowerPort.objects.filter(device=device).select_related('power_outlet__device'), key=attrgetter('name')
+    )
+    power_outlets = natsorted(
+        PowerOutlet.objects.filter(device=device).select_related('connected_port'), key=attrgetter('name')
+    )
     interfaces = Interface.objects.filter(device=device, mgmt_only=False)\
         .select_related('connected_as_a', 'connected_as_b', 'circuit')
     mgmt_interfaces = Interface.objects.filter(device=device, mgmt_only=True)\
         .select_related('connected_as_a', 'connected_as_b', 'circuit')
-    device_bays = DeviceBay.objects.filter(device=device).select_related('installed_device__device_type__manufacturer')
+    device_bays = natsorted(
+        DeviceBay.objects.filter(device=device).select_related('installed_device__device_type__manufacturer'),
+        key=attrgetter('name')
+    )
 
     # Gather any secrets which belong to this device
     secrets = device.secrets.all()
@@ -579,6 +607,23 @@ class DeviceBulkImportView(PermissionRequiredMixin, BulkImportView):
     table = tables.DeviceImportTable
     template_name = 'dcim/device_import.html'
     obj_list_url = 'dcim:device_list'
+
+
+class ChildDeviceBulkImportView(PermissionRequiredMixin, BulkImportView):
+    permission_required = 'dcim.add_device'
+    form = forms.ChildDeviceImportForm
+    table = tables.DeviceImportTable
+    template_name = 'dcim/device_import_child.html'
+    obj_list_url = 'dcim:device_list'
+
+    def save_obj(self, obj):
+        # Inherent rack from parent device
+        obj.rack = obj.parent_bay.device.rack
+        obj.save()
+        # Save the reverse relation
+        device_bay = obj.parent_bay
+        device_bay.installed_device = obj
+        device_bay.save()
 
 
 class DeviceBulkEditView(PermissionRequiredMixin, BulkEditView):
@@ -1634,7 +1679,10 @@ def ipaddress_assign(request, pk):
                                                                                          ipaddress.interface))
 
             if form.cleaned_data['set_as_primary']:
-                device.primary_ip = ipaddress
+                if ipaddress.family == 4:
+                    device.primary_ip4 = ipaddress
+                elif ipaddress.family == 6:
+                    device.primary_ip6 = ipaddress
                 device.save()
 
             if '_addanother' in request.POST:

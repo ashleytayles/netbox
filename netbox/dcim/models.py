@@ -1,5 +1,6 @@
 from collections import OrderedDict
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.urlresolvers import reverse
 from django.core.validators import MinValueValidator
@@ -10,7 +11,7 @@ from extras.rpc import RPC_CLIENTS
 from utilities.fields import NullableCharField
 from utilities.models import CreatedUpdatedModel
 
-from .fields import MACAddressField
+from .fields import ASNField, MACAddressField
 
 RACK_FACE_FRONT = 0
 RACK_FACE_REAR = 1
@@ -144,7 +145,7 @@ class Site(CreatedUpdatedModel):
     name = models.CharField(max_length=50, unique=True)
     slug = models.SlugField(unique=True)
     facility = models.CharField(max_length=50, blank=True)
-    asn = models.PositiveIntegerField(blank=True, null=True, verbose_name='ASN')
+    asn = ASNField(blank=True, null=True, verbose_name='ASN')
     physical_address = models.CharField(max_length=200, blank=True)
     shipping_address = models.CharField(max_length=200, blank=True)
     comments = models.TextField(blank=True)
@@ -263,7 +264,7 @@ class Rack(CreatedUpdatedModel):
     @property
     def display_name(self):
         if self.facility_id:
-            return "{} ({})".format(self.name, self.facility_id)
+            return u"{} ({})".format(self.name, self.facility_id)
         return self.name
 
     def get_rack_units(self, face=RACK_FACE_FRONT, exclude=None, remove_redundant=False):
@@ -605,8 +606,10 @@ class Device(CreatedUpdatedModel):
                                                 help_text='Number of the lowest U position occupied by the device')
     face = models.PositiveSmallIntegerField(blank=True, null=True, choices=RACK_FACE_CHOICES, verbose_name='Rack face')
     status = models.BooleanField(choices=STATUS_CHOICES, default=STATUS_ACTIVE, verbose_name='Status')
-    primary_ip = models.OneToOneField('ipam.IPAddress', related_name='primary_for', on_delete=models.SET_NULL,
-                                      blank=True, null=True, verbose_name='Primary IP')
+    primary_ip4 = models.OneToOneField('ipam.IPAddress', related_name='primary_ip4_for', on_delete=models.SET_NULL,
+                                       blank=True, null=True, verbose_name='Primary IPv4')
+    primary_ip6 = models.OneToOneField('ipam.IPAddress', related_name='primary_ip6_for', on_delete=models.SET_NULL,
+                                       blank=True, null=True, verbose_name='Primary IPv6')
     comments = models.TextField(blank=True)
 
     class Meta:
@@ -621,6 +624,10 @@ class Device(CreatedUpdatedModel):
 
     def clean(self):
 
+        # Validate device type assignment
+        if not hasattr(self, 'device_type'):
+            raise ValidationError("Must specify device type.")
+
         # Child devices cannot be assigned to a rack face/unit
         if self.device_type.is_child_device and (self.face is not None or self.position):
             raise ValidationError("Child device types cannot be assigned a rack face or position.")
@@ -630,10 +637,7 @@ class Device(CreatedUpdatedModel):
             raise ValidationError("Must specify rack face with rack position.")
 
         # Validate rack space
-        try:
-            rack_face = self.face if not self.device_type.is_full_depth else None
-        except DeviceType.DoesNotExist:
-            raise ValidationError("Must specify device type.")
+        rack_face = self.face if not self.device_type.is_full_depth else None
         exclude_list = [self.pk] if self.pk else []
         try:
             available_units = self.rack.get_available_units(u_height=self.device_type.u_height, rack_face=rack_face,
@@ -677,6 +681,9 @@ class Device(CreatedUpdatedModel):
                  self.device_type.device_bay_templates.all()]
             )
 
+        # Update Rack assignment for any child Devices
+        Device.objects.filter(parent_bay__device=self).update(rack=self.rack)
+
     def to_csv(self):
         return ','.join([
             self.name or '',
@@ -696,9 +703,9 @@ class Device(CreatedUpdatedModel):
         if self.name:
             return self.name
         elif self.position:
-            return "{} ({} U{})".format(self.device_type, self.rack.name, self.position)
+            return u"{} ({} U{})".format(self.device_type, self.rack.name, self.position)
         else:
-            return "{} ({})".format(self.device_type, self.rack.name)
+            return u"{} ({})".format(self.device_type, self.rack.name)
 
     @property
     def identifier(self):
@@ -708,6 +715,17 @@ class Device(CreatedUpdatedModel):
         if self.name is not None:
             return self.name
         return '{{{}}}'.format(self.pk)
+
+    @property
+    def primary_ip(self):
+        if settings.PREFER_IPV4 and self.primary_ip4:
+            return self.primary_ip4
+        elif self.primary_ip6:
+            return self.primary_ip6
+        elif self.primary_ip4:
+            return self.primary_ip4
+        else:
+            return None
 
     def get_children(self):
         """
@@ -939,7 +957,8 @@ class DeviceBay(models.Model):
     """
     device = models.ForeignKey('Device', related_name='device_bays', on_delete=models.CASCADE)
     name = models.CharField(max_length=50, verbose_name='Name')
-    installed_device = models.OneToOneField('Device', related_name='parent_bay', blank=True, null=True)
+    installed_device = models.OneToOneField('Device', related_name='parent_bay', on_delete=models.SET_NULL, blank=True,
+                                            null=True)
 
     class Meta:
         ordering = ['device', 'name']

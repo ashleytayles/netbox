@@ -186,7 +186,7 @@ def rack_group_choices():
 class RackFilterForm(forms.Form, BootstrapMixin):
     site = forms.MultipleChoiceField(required=False, choices=rack_site_choices,
                                      widget=forms.SelectMultiple(attrs={'size': 8}))
-    group_id = forms.MultipleChoiceField(required=False, choices=rack_group_choices,
+    group_id = forms.MultipleChoiceField(required=False, choices=rack_group_choices, label='Rack Group',
                                          widget=forms.SelectMultiple(attrs={'size': 8}))
 
 
@@ -340,7 +340,7 @@ class DeviceForm(forms.ModelForm, BootstrapMixin):
                                                        disabled_indicator='device'))
     manufacturer = forms.ModelChoiceField(queryset=Manufacturer.objects.all(),
                                           widget=forms.Select(attrs={'filter-for': 'device_type'}))
-    device_type = forms.ModelChoiceField(queryset=DeviceType.objects.all(), label='Model', widget=APISelect(
+    device_type = forms.ModelChoiceField(queryset=DeviceType.objects.all(), label='Device type', widget=APISelect(
         api_url='/api/dcim/device-types/?manufacturer_id={{manufacturer}}',
         display_field='model'
     ))
@@ -349,7 +349,7 @@ class DeviceForm(forms.ModelForm, BootstrapMixin):
     class Meta:
         model = Device
         fields = ['name', 'device_role', 'device_type', 'serial', 'site', 'rack', 'position', 'face', 'status',
-                  'platform', 'primary_ip', 'comments']
+                  'platform', 'primary_ip4', 'primary_ip6', 'comments']
         help_texts = {
             'device_role': "The function this device serves",
             'serial': "Chassis serial number",
@@ -369,20 +369,23 @@ class DeviceForm(forms.ModelForm, BootstrapMixin):
             self.initial['site'] = self.instance.rack.site
             self.initial['manufacturer'] = self.instance.device_type.manufacturer
 
-            # Compile list of IPs assigned to this device
-            primary_ip_choices = []
-            interface_ips = IPAddress.objects.filter(interface__device=self.instance)
-            primary_ip_choices += [(ip.id, '{} ({})'.format(ip.address, ip.interface)) for ip in interface_ips]
-            nat_ips = IPAddress.objects.filter(nat_inside__interface__device=self.instance)\
-                .select_related('nat_inside__interface')
-            primary_ip_choices += [(ip.id, '{} ({} NAT)'.format(ip.address, ip.nat_inside.interface)) for ip in nat_ips]
-            self.fields['primary_ip'].choices = [(None, '---------')] + primary_ip_choices
+            # Compile list of choices for primary IPv4 and IPv6 addresses
+            for family in [4, 6]:
+                ip_choices = []
+                interface_ips = IPAddress.objects.filter(family=family, interface__device=self.instance)
+                ip_choices += [(ip.id, '{} ({})'.format(ip.address, ip.interface)) for ip in interface_ips]
+                nat_ips = IPAddress.objects.filter(family=family, nat_inside__interface__device=self.instance)\
+                    .select_related('nat_inside__interface')
+                ip_choices += [(ip.id, '{} ({} NAT)'.format(ip.address, ip.nat_inside.interface)) for ip in nat_ips]
+                self.fields['primary_ip{}'.format(family)].choices = [(None, '---------')] + ip_choices
 
         else:
 
             # An object that doesn't exist yet can't have any IPs assigned to it
-            self.fields['primary_ip'].choices = []
-            self.fields['primary_ip'].widget.attrs['readonly'] = True
+            self.fields['primary_ip4'].choices = []
+            self.fields['primary_ip4'].widget.attrs['readonly'] = True
+            self.fields['primary_ip6'].choices = []
+            self.fields['primary_ip6'].widget.attrs['readonly'] = True
 
         # Limit rack choices
         if self.is_bound:
@@ -423,7 +426,7 @@ class DeviceForm(forms.ModelForm, BootstrapMixin):
             self.fields['device_type'].choices = []
 
 
-class DeviceFromCSVForm(forms.ModelForm):
+class BaseDeviceFromCSVForm(forms.ModelForm):
     device_role = forms.ModelChoiceField(queryset=DeviceRole.objects.all(), to_field_name='name',
                                          error_messages={'invalid_choice': 'Invalid device role.'})
     manufacturer = forms.ModelChoiceField(queryset=Manufacturer.objects.all(), to_field_name='name',
@@ -431,23 +434,15 @@ class DeviceFromCSVForm(forms.ModelForm):
     model_name = forms.CharField()
     platform = forms.ModelChoiceField(queryset=Platform.objects.all(), required=False, to_field_name='name',
                                       error_messages={'invalid_choice': 'Invalid platform.'})
-    site = forms.ModelChoiceField(queryset=Site.objects.all(), to_field_name='name', error_messages={
-        'invalid_choice': 'Invalid site name.',
-    })
-    rack_name = forms.CharField()
-    face = forms.CharField(required=False)
 
     class Meta:
+        fields = []
         model = Device
-        fields = ['name', 'device_role', 'manufacturer', 'model_name', 'platform', 'serial', 'site', 'rack_name',
-                  'position', 'face']
 
     def clean(self):
 
         manufacturer = self.cleaned_data.get('manufacturer')
         model_name = self.cleaned_data.get('model_name')
-        site = self.cleaned_data.get('site')
-        rack_name = self.cleaned_data.get('rack_name')
 
         # Validate device type
         if manufacturer and model_name:
@@ -455,6 +450,25 @@ class DeviceFromCSVForm(forms.ModelForm):
                 self.instance.device_type = DeviceType.objects.get(manufacturer=manufacturer, model=model_name)
             except DeviceType.DoesNotExist:
                 self.add_error('model_name', "Invalid device type ({} {})".format(manufacturer, model_name))
+
+
+class DeviceFromCSVForm(BaseDeviceFromCSVForm):
+    site = forms.ModelChoiceField(queryset=Site.objects.all(), to_field_name='name', error_messages={
+        'invalid_choice': 'Invalid site name.',
+    })
+    rack_name = forms.CharField()
+    face = forms.CharField(required=False)
+
+    class Meta(BaseDeviceFromCSVForm.Meta):
+        fields = ['name', 'device_role', 'manufacturer', 'model_name', 'platform', 'serial', 'site', 'rack_name',
+                  'position', 'face']
+
+    def clean(self):
+
+        super(DeviceFromCSVForm, self).clean()
+
+        site = self.cleaned_data.get('site')
+        rack_name = self.cleaned_data.get('rack_name')
 
         # Validate rack
         if site and rack_name:
@@ -465,19 +479,52 @@ class DeviceFromCSVForm(forms.ModelForm):
 
     def clean_face(self):
         face = self.cleaned_data['face']
-        if face:
+        if not face:
+            return None
+        try:
+            return {
+                'front': 0,
+                'rear': 1,
+            }[face.lower()]
+        except KeyError:
+            raise forms.ValidationError('Invalid rack face ({}); must be "front" or "rear".'.format(face))
+
+
+class ChildDeviceFromCSVForm(BaseDeviceFromCSVForm):
+    parent = FlexibleModelChoiceField(queryset=Device.objects.all(), to_field_name='name', required=False,
+                                      error_messages={'invalid_choice': 'Parent device not found.'})
+    device_bay_name = forms.CharField(required=False)
+
+    class Meta(BaseDeviceFromCSVForm.Meta):
+        fields = ['name', 'device_role', 'manufacturer', 'model_name', 'platform', 'serial', 'parent',
+                  'device_bay_name']
+
+    def clean(self):
+
+        super(ChildDeviceFromCSVForm, self).clean()
+
+        parent = self.cleaned_data.get('parent')
+        device_bay_name = self.cleaned_data.get('device_bay_name')
+
+        # Validate device bay
+        if parent and device_bay_name:
             try:
-                return {
-                    'front': 0,
-                    'rear': 1,
-                }[face.lower()]
-            except KeyError:
-                raise forms.ValidationError('Invalid rack face ({}); must be "front" or "rear".'.format(face))
-        return face
+                device_bay = DeviceBay.objects.get(device=parent, name=device_bay_name)
+                if device_bay.installed_device:
+                    self.add_error('device_bay_name',
+                                   "Device bay ({} {}) is already occupied".format(parent, device_bay_name))
+                else:
+                    self.instance.parent_bay = device_bay
+            except DeviceBay.DoesNotExist:
+                self.add_error('device_bay_name', "Parent device/bay ({} {}) not found".format(parent, device_bay_name))
 
 
 class DeviceImportForm(BulkImportForm, BootstrapMixin):
     csv = CSVDataField(csv_form=DeviceFromCSVForm)
+
+
+class ChildDeviceImportForm(BulkImportForm, BootstrapMixin):
+    csv = CSVDataField(csv_form=ChildDeviceFromCSVForm)
 
 
 class DeviceBulkEditForm(forms.Form, BootstrapMixin):
@@ -499,6 +546,11 @@ def device_site_choices():
     return [(s.slug, '{} ({})'.format(s.name, s.device_count)) for s in site_choices]
 
 
+def device_rack_group_choices():
+    group_choices = RackGroup.objects.select_related('site').annotate(device_count=Count('racks__devices'))
+    return [(g.pk, '{} ({})'.format(g, g.device_count)) for g in group_choices]
+
+
 def device_role_choices():
     role_choices = DeviceRole.objects.annotate(device_count=Count('devices'))
     return [(r.slug, '{} ({})'.format(r.name, r.device_count)) for r in role_choices]
@@ -517,6 +569,8 @@ def device_platform_choices():
 class DeviceFilterForm(forms.Form, BootstrapMixin):
     site = forms.MultipleChoiceField(required=False, choices=device_site_choices,
                                      widget=forms.SelectMultiple(attrs={'size': 8}))
+    rack_group_id = forms.MultipleChoiceField(required=False, choices=device_rack_group_choices, label='Rack Group',
+                                              widget=forms.SelectMultiple(attrs={'size': 8}))
     role = forms.MultipleChoiceField(required=False, choices=device_role_choices,
                                      widget=forms.SelectMultiple(attrs={'size': 8}))
     device_type_id = forms.MultipleChoiceField(required=False, choices=device_type_choices, label='Type',

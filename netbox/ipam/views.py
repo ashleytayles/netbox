@@ -12,7 +12,7 @@ from utilities.views import (
 )
 
 from . import filters, forms, tables
-from .models import Aggregate, IPAddress, Prefix, RIR, Role, VLAN, VRF
+from .models import Aggregate, IPAddress, Prefix, RIR, Role, VLAN, VLANGroup, VRF
 
 
 def add_available_prefixes(parent, prefix_list):
@@ -364,7 +364,7 @@ def prefix_ipaddresses(request, pk):
 
     # Find all IPAddresses belonging to this Prefix
     ipaddresses = IPAddress.objects.filter(address__net_contained_or_equal=str(prefix.prefix))\
-        .select_related('vrf', 'interface__device', 'primary_for')
+        .select_related('vrf', 'interface__device', 'primary_ip4_for', 'primary_ip6_for')
 
     ip_table = tables.IPAddressTable(ipaddresses)
     ip_table.model = IPAddress
@@ -383,7 +383,7 @@ def prefix_ipaddresses(request, pk):
 #
 
 class IPAddressListView(ObjectListView):
-    queryset = IPAddress.objects.select_related('vrf', 'interface__device', 'primary_for')
+    queryset = IPAddress.objects.select_related('vrf', 'interface__device', 'primary_ip4_for', 'primary_ip6_for')
     filter = filters.IPAddressFilter
     filter_form = forms.IPAddressFilterForm
     table = tables.IPAddressTable
@@ -443,9 +443,14 @@ class IPAddressBulkImportView(PermissionRequiredMixin, BulkImportView):
         obj.save()
         # Update primary IP for device if needed
         try:
-            device = obj.primary_for
-            device.primary_ip = obj
-            device.save()
+            if obj.family == 4 and obj.primary_ip4_for:
+                device = obj.primary_ip4_for
+                device.primary_ip4 = obj
+                device.save()
+            elif obj.family == 6 and obj.primary_ip6_for:
+                device = obj.primary_ip6_for
+                device.primary_ip6 = obj
+                device.save()
         except Device.DoesNotExist:
             pass
 
@@ -476,6 +481,33 @@ class IPAddressBulkDeleteView(PermissionRequiredMixin, BulkDeleteView):
     cls = IPAddress
     form = forms.IPAddressBulkDeleteForm
     default_redirect_url = 'ipam:ipaddress_list'
+
+
+#
+# VLAN groups
+#
+
+class VLANGroupListView(ObjectListView):
+    queryset = VLANGroup.objects.annotate(vlan_count=Count('vlans'))
+    filter = filters.VLANGroupFilter
+    filter_form = forms.VLANGroupFilterForm
+    table = tables.VLANGroupTable
+    edit_permissions = ['ipam.change_vlangroup', 'ipam.delete_vlangroup']
+    template_name = 'ipam/vlangroup_list.html'
+
+
+class VLANGroupEditView(PermissionRequiredMixin, ObjectEditView):
+    permission_required = 'ipam.change_vlangroup'
+    model = VLANGroup
+    form_class = forms.VLANGroupForm
+    cancel_url = 'ipam:vlangroup_list'
+
+
+class VLANGroupBulkDeleteView(PermissionRequiredMixin, BulkDeleteView):
+    permission_required = 'ipam.delete_vlangroup'
+    cls = VLANGroup
+    form = forms.VLANGroupBulkDeleteForm
+    default_redirect_url = 'ipam:vlangroup_list'
 
 
 #
